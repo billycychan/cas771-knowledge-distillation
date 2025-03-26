@@ -3,20 +3,36 @@ import os
 import numpy as np
 from collections import defaultdict
 
-def load_data(data_path):
-    """Load data from the given path"""
+def load_data(data_path, task='B'):
     raw_data = torch.load(data_path)
-    data = raw_data['data'].numpy()
-    labels = raw_data['labels'].numpy()
-    return data, labels
+    if task == 'A':
+        data = raw_data['data']
+        labels = raw_data['labels']
+        indices = raw_data['indices']
+        return data, labels, indices
+    elif task == 'B':
+        data = raw_data['data'].numpy().transpose(0, 3, 1, 2)
+        labels = raw_data['labels'].numpy()
+    return data, labels, None
 
 def main():
     # Path to each teacher model's training data
-    data_paths = {
-        1: './data/TaskB/train_dataB_model_1.pth',
-        2: './data/TaskB/train_dataB_model_2.pth',
-        3: './data/TaskB/train_dataB_model_3.pth'
-    }
+    # Task A
+    task = 'A'
+    if task == 'A':
+        data_paths = {
+            1: './data/TaskA/Model1_trees_superclass/model1_train_supercls.pth', 
+            2: './data/TaskA/Model2_flowers_superclass/model2_train_supercls.pth', 
+            3: './data/TaskA/Model3_fruit+veg_superclass/model3_train_supercls.pth'
+        }
+    
+    # Task B
+    elif task == 'B':
+        data_paths = {
+            1: './data/TaskB/train_dataB_model_1.pth',
+            2: './data/TaskB/train_dataB_model_2.pth',
+            3: './data/TaskB/train_dataB_model_3.pth'
+        }
     
     # Dictionary to store the original class labels for each teacher model
     teacher_original_classes = {}
@@ -36,8 +52,11 @@ def main():
         if not os.path.exists(data_path):
             print(f"Warning: File {data_path} does not exist!")
             continue
-            
-        _, labels = load_data(data_path)
+        
+        if task == 'A':
+            _, labels, _ = load_data(data_path, task)
+        else:
+            _, labels = load_data(data_path, task)
         
         # Get unique original class labels for this teacher
         unique_labels = sorted(set(labels))
