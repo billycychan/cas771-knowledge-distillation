@@ -198,6 +198,7 @@ def load_all_datasets(batch_size=32, task='B'):
     
     # Calculate normalization statistics
     initial_transform = transforms.Compose([
+        transforms.Resize((64, 64)),
         transforms.ToTensor()
     ])
     
@@ -210,11 +211,13 @@ def load_all_datasets(batch_size=32, task='B'):
     
     # Apply normalization
     transform = transforms.Compose([
+        transforms.Resize((64, 64)),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean.tolist(), std=std.tolist())
     ])
     
     test_transform = transforms.Compose([
+        transforms.Resize((64, 64)),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean.tolist(), std=std.tolist())
     ])
