@@ -9,69 +9,15 @@ from scipy.signal import savgol_filter
 import os
 import random
 import sys
+import datetime
+import time
+import argparse
 
 # Import custom modules
 from data_loader_kd import load_all_datasets, custom_collate_fn
 from teacher_model_B import CNN, set_seed
-
-class StudentModel(nn.Module):
-    def __init__(self, num_classes):
-        super().__init__()
-        # Student model architecture - similar to teacher but smaller
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True)
-        )
-        
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2)
-        )
-        
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2)
-        )
-        
-        self.conv4 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2)
-        )
-        
-        self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
-            nn.Dropout(0.5),
-            nn.Linear(256, num_classes)
-        )
-        
-        self._initialize_weights()
-        
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-        return self.classifier(x)
-    
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
-
+from utils import plot_learning_curve
+from student_model import StudentModel  # Import the Swin Transformer student model
 
 def load_teacher_models(device, task='B'):
     """
@@ -118,104 +64,102 @@ def load_teacher_models(device, task='B'):
 
 def get_teacher_soft_labels(images, teacher_ids_batch, teacher_models, device, num_classes, temperature=2.0):
     """
-    根据教师ID，获取教师模型的软标签
-    对于由多个教师负责的类别，将相关教师输出的概率分布进行平均
+    Get soft labels from teacher models based on teacher IDs.
+    For classes covered by multiple teachers, average their probability distributions.
     """
     batch_size = images.size(0)
-    
-    # 创建张量存储批次的软标签
     batch_soft_labels = torch.zeros(batch_size, num_classes).to(device)
     
-    # 处理批次中的每个样本
-    for i in range(batch_size):
-        image = images[i].unsqueeze(0)  # 添加批次维度
-        teacher_ids = teacher_ids_batch[i]
+    # Create mapping dictionary - precompute instead of repeating in the loop
+    teacher_mappings = {
+        1: [1, 7, 8, 9, 10],  # Teacher 1 local indices 0-4 mapping to global indices
+        2: [0, 1, 2, 6, 11],  # Teacher 2 local indices 0-4 mapping to global indices
+        3: [3, 4, 5, 9, 11]   # Teacher 3 local indices 0-4 mapping to global indices
+    }
+    
+    # Process by teacher model group - more efficient batch processing
+    for teacher_id in [1, 2, 3]:
+        # Find indices of all samples this teacher is responsible for
+        indices = [i for i, teacher_ids in enumerate(teacher_ids_batch) if teacher_id in teacher_ids]
         
-        # 跳过无教师分配的样本（理论上不应该发生）
-        if not teacher_ids:
-            continue
+        if not indices:
+            continue  # No samples use this teacher, skip
             
-        # 创建张量记录每个教师对每个类别的预测次数
-        teacher_counts = torch.zeros(num_classes).to(device)
+        # Get all samples this teacher is responsible for, process at once
+        teacher_batch = images[indices]
         
-        # 从每个相关教师获取预测
-        for teacher_id in teacher_ids:
-            with torch.no_grad():
-                # 获取教师模型的输出
-                teacher_output = teacher_models[teacher_id](image)
-                
-                # 应用温度缩放并转换为概率
-                soft_probs = F.softmax(teacher_output / temperature, dim=1).squeeze()
-                
-                # 根据teacher_id将教师模型的输出映射到对应的全局类别
-                # 使用从check_mappings.py中确认的映射关系
-                
-                # 将教师的预测添加到相应的全局类别位置
-                if teacher_id == 1:
-                    # 教师1本地索引0-4映射到全局索引
-                    global_indices = [1, 7, 8, 9, 10]  # For teacher_1
-                elif teacher_id == 2:
-                    # 教师2本地索引0-4映射到全局索引
-                    global_indices = [0, 1, 2, 6, 11]  # For teacher_2
-                elif teacher_id == 3:
-                    # 教师3本地索引0-4映射到全局索引
-                    global_indices = [3, 4, 5, 9, 11]  # For teacher_3
-                
-                # 将教师的输出映射到全局类别空间
+        # Get teacher model predictions for the entire batch at once
+        with torch.no_grad():
+            teacher_outputs = teacher_models[teacher_id](teacher_batch)
+            
+            # Apply temperature scaling and convert to probabilities
+            soft_probs = F.softmax(teacher_outputs / temperature, dim=1)
+            
+            # Get mapping relationship
+            global_indices = teacher_mappings[teacher_id]
+            
+            # Record teacher predictions and counts for each sample
+            for batch_idx, orig_idx in enumerate(indices):
                 for local_idx, global_idx in enumerate(global_indices):
-                    batch_soft_labels[i, global_idx] += soft_probs[local_idx]
-                    teacher_counts[global_idx] += 1
-        
-        # 对于被多个教师预测的类别，计算平均值
-        valid_counts = teacher_counts > 0
-        batch_soft_labels[i, valid_counts] /= teacher_counts[valid_counts]
+                    batch_soft_labels[orig_idx, global_idx] += soft_probs[batch_idx, local_idx]
+    
+    # For each sample, calculate how many times each class was predicted
+    teacher_counts = torch.zeros(batch_size, num_classes).to(device)
+    for i, teacher_ids in enumerate(teacher_ids_batch):
+        for teacher_id in teacher_ids:
+            for global_idx in teacher_mappings[teacher_id]:
+                teacher_counts[i, global_idx] += 1
+    
+    # Calculate averages
+    valid_mask = teacher_counts > 0
+    batch_soft_labels[valid_mask] /= teacher_counts[valid_mask]
     
     return batch_soft_labels
 
 
 def distillation_loss(student_logits, teacher_soft_labels, labels, temperature=2.0, alpha=0.5):
     """
-    计算知识蒸馏损失，结合：
-    1. 学生预测与真实标签之间的交叉熵损失（硬标签）
-    2. 学生与教师预测之间的KL散度（软标签）
+    Calculate knowledge distillation loss, combining:
+    1. Cross entropy loss between student predictions and true labels (hard labels)
+    2. KL divergence between student and teacher predictions (soft labels)
     """
-    # 硬标签损失
+    # Hard label loss
     hard_loss = F.cross_entropy(student_logits, labels)
     
-    # 软标签损失，使用温度缩放
+    # Soft label loss with temperature scaling
     soft_student = F.log_softmax(student_logits / temperature, dim=1)
-    # 教师软标签已经是概率分布
+    # Teacher soft labels are already probability distributions
     soft_loss = F.kl_div(soft_student, teacher_soft_labels, reduction='batchmean') * (temperature ** 2)
     
-    # 组合损失
+    # Combined loss
     return (1 - alpha) * hard_loss + alpha * soft_loss
 
 
 def train_step(student_model, teacher_models, images, labels, teacher_ids, optimizer, device, temperature=2.0, alpha=0.5):
     """
-    执行单次知识蒸馏训练步骤
+    Execute a single knowledge distillation training step
     """
-    # 将数据移至设备
+    # Move data to device
     images, labels = images.to(device), labels.to(device)
     
-    # 学生模型前向传播
+    # Forward pass through student model
     student_logits = student_model(images)
     
-    # 根据教师ID获取教师软标签
+    # Get teacher soft labels based on teacher IDs
     teacher_soft_labels = get_teacher_soft_labels(images, teacher_ids, teacher_models, device, student_logits.size(1), temperature)
     
-    # 计算蒸馏损失
+    # Calculate distillation loss
     loss = distillation_loss(student_logits, teacher_soft_labels, labels, temperature, alpha)
     
-    # 反向传播和优化
+    # Backpropagation and optimization
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
     
-    # 计算准确率
+    # Calculate accuracy
     _, predictions = torch.max(student_logits, 1)
     correct = (predictions == labels).sum().item()
-    accuracy = correct / images.size(0)
+    accuracy = 100 * correct / images.size(0)  # Convert to percentage to match validate function
     
     return loss.item(), accuracy
 
@@ -248,100 +192,94 @@ def validate(student_model, dataloader, device):
     return avg_loss, accuracy
 
 
-def plot_learning_curve(num_epochs, train_losses, train_accuracies, val_accuracies):
-    """
-    Plot the learning curves for loss and accuracy
-    """
-    # Smoothing the curves
-    if len(train_losses) > 10:
-        train_losses_smooth = savgol_filter(train_losses, min(15, len(train_losses) - 2 - (len(train_losses) - 2) % 2), 2)
-        train_accuracies_smooth = savgol_filter(train_accuracies, min(15, len(train_accuracies) - 2 - (len(train_accuracies) - 2) % 2), 2)
-        val_accuracies_smooth = savgol_filter(val_accuracies, min(15, len(val_accuracies) - 2 - (len(val_accuracies) - 2) % 2), 2)
-    else:
-        train_losses_smooth = train_losses
-        train_accuracies_smooth = train_accuracies
-        val_accuracies_smooth = val_accuracies
-
-    epochs = range(1, num_epochs + 1)
-    
-    plt.figure(figsize=(12, 5))
-    
-    # Plot loss
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs, train_losses, 'b-', alpha=0.3, label='Training Loss (raw)')
-    plt.plot(epochs, train_losses_smooth, 'b-', label='Training Loss (smoothed)')
-    plt.title('Training Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    
-    # Plot accuracy
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs, train_accuracies, 'b-', alpha=0.3, label='Training Accuracy (raw)')
-    plt.plot(epochs, train_accuracies_smooth, 'b-', label='Training Accuracy (smoothed)')
-    plt.plot(epochs, val_accuracies, 'r-', alpha=0.3, label='Validation Accuracy (raw)')
-    plt.plot(epochs, val_accuracies_smooth, 'r-', label='Validation Accuracy (smoothed)')
-    plt.title('Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig('./learning_curve_kd.png')
-    plt.close()
-
-
 def main():
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Knowledge Distillation Training with Multiple Teachers')
+    parser.add_argument('--task', type=str, default='B', choices=['A', 'B'], help='Task to run (A or B)')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training')
+    parser.add_argument('--num_epochs', type=int, default=100, help='Number of epochs to train')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=5e-4, help='Weight decay for optimizer')
+    parser.add_argument('--temperature', type=float, default=2.0, help='Temperature for knowledge distillation')
+    parser.add_argument('--alpha', type=float, default=0.1, help='Weight balance between hard and soft targets (higher means more weight on soft targets)')
+    parser.add_argument('--scheduler_step', type=int, default=30, help='Step size for learning rate scheduler')
+    parser.add_argument('--scheduler_gamma', type=float, default=0.5, help='Gamma for learning rate scheduler')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--student_model', type=str, default='EfficientNet', choices=['MobileNetV3', 'EfficientNet', 'ResNet18'], help='Student model architecture')
+    parser.add_argument('--run', type=str, default='', help='Optional suffix to append to the log directory name')
+    
+    args = parser.parse_args()
+    
     # Set random seed for reproducibility
-    set_seed(42)
+    set_seed(args.seed)
     
-    # Task selection (A or B)
-    task = 'B'  # Change to 'A' for Task A
+    # Create runs directory for logging
+    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = f'./runs/{current_time}_task_{args.task}'
+    if args.run:
+        log_dir += f'_{args.run}'
+    os.makedirs(log_dir, exist_ok=True)
     
-    # Command line argument for task
-    if len(sys.argv) > 1 and sys.argv[1] in ['A', 'B']:
-        task = sys.argv[1]
+    # Set up logging to file and console
+    log_file = f'{log_dir}/training_log.txt'
     
-    print(f"Running Task {task}")
+    # Logger function to write to both console and file
+    def log_print(*logs, **kwargs):
+        print(*logs, **kwargs)
+        with open(log_file, 'a') as f:
+            print(*logs, file=f, **kwargs)
     
-    # Hyperparameters
-    batch_size = 32
-    num_epochs = 100
-    learning_rate = 1e-3
-    weight_decay = 5e-4
-    temperature = 2.0  # Temperature for knowledge distillation
-    alpha = 0.1  # Balance between hard and soft targets
+    log_print(f"Started training at {current_time}")
+    log_print(f"Running Task {args.task}")
+    
+    # Log all arguments
+    log_print("Training configuration:")
+    for arg, value in sorted(vars(args).items()):
+        log_print(f"- {arg}: {value}")
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    log_print(f"Using device: {device}")
     
     # Load datasets with teacher IDs
-    train_loader, val_loader, num_classes = load_all_datasets(batch_size=batch_size, task=task)
-    print(f"Number of classes: {num_classes}")
+    train_loader, val_loader, num_classes = load_all_datasets(batch_size=args.batch_size, task=args.task)
+    log_print(f"Number of classes: {num_classes}")
+    
+    # Import and select student model dynamically based on argument
+    if args.student_model == 'MobileNetV3':
+        from student_model import MobileNetV3Student as StudentModelClass
+    elif args.student_model == 'EfficientNet':
+        from student_model import EfficientNetStudent as StudentModelClass
+    elif args.student_model == 'ResNet18':
+        from student_model import ResNet18Student as StudentModelClass
+    else:
+        from student_model import StudentModel as StudentModelClass
     
     # Initialize student model
-    student_model = StudentModel(num_classes=num_classes)
+    student_model = StudentModelClass(num_classes=num_classes)
     student_model.to(device)
+    log_print(f"Using student model: {args.student_model}")
     
     # Load pre-trained teacher models with their original class counts
-    teacher_models = load_teacher_models(device, task=task)
+    teacher_models = load_teacher_models(device, task=args.task)
     
     # Optimizer
-    optimizer = optim.Adam(student_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
-    
-    # Output directory based on task
-    output_dir = f'./checkpoints/task_{task}'
-    os.makedirs(output_dir, exist_ok=True)
+    optimizer = optim.Adam(student_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
     
     # Training loop
     train_losses = []
     train_accuracies = []
     val_accuracies = []
     best_val_accuracy = 0.0
+    prev_best_model_path = None  # Track the previous best model path
     
-    for epoch in range(num_epochs):
+    start_time = time.time()
+    log_print("\nStarting training...")
+    
+    for epoch in range(args.num_epochs):
+        epoch_start_time = time.time()
+        
         # Training
         student_model.train()
         epoch_loss = 0.0
@@ -351,7 +289,7 @@ def main():
         for images, labels, teacher_ids in train_loader:
             loss, accuracy = train_step(
                 student_model, teacher_models, images, labels, teacher_ids, 
-                optimizer, device, temperature, alpha
+                optimizer, device, args.temperature, args.alpha
             )
             epoch_loss += loss
             epoch_accuracy += accuracy
@@ -359,7 +297,7 @@ def main():
         
         # Average loss and accuracy for the epoch
         epoch_loss /= batch_count
-        epoch_accuracy *= 100.0  # Convert to percentage
+        epoch_accuracy /= batch_count
         train_losses.append(epoch_loss)
         train_accuracies.append(epoch_accuracy)
         
@@ -370,48 +308,62 @@ def main():
         # Learning rate adjustment
         scheduler.step()
         
+        # Calculate epoch time
+        epoch_time = time.time() - epoch_start_time
+        
         # Print progress
-        print(f"Epoch [{epoch+1}/{num_epochs}] - "
-              f"Train Loss: {epoch_loss:.4f}, Train Acc: {epoch_accuracy:.2f}%, "
-              f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.2f}%")
+        log_print(f"Epoch [{epoch+1}/{args.num_epochs}] - "
+                f"Train Loss: {epoch_loss:.4f}, Train Acc: {epoch_accuracy:.2f}%, "
+                f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.2f}% "
+                f"- Time: {epoch_time:.2f}s")
         
         # Save best model
         if val_accuracy > best_val_accuracy:
+            # Delete previous best model if it exists
+            if prev_best_model_path is not None and os.path.exists(prev_best_model_path):
+                os.remove(prev_best_model_path)
+                log_print(f"Removed previous best model: {prev_best_model_path}")
+            
             best_val_accuracy = val_accuracy
-            torch.save(student_model.state_dict(), f'{output_dir}/student_model_best.pth')
-            print(f"Saved best model with validation accuracy: {best_val_accuracy:.2f}%")
+            # Save model in the runs directory with epoch and accuracy in the filename
+            best_model_path = f'{log_dir}/student_model_epoch{epoch+1}_acc{val_accuracy:.2f}.pth'
+            torch.save(student_model.state_dict(), best_model_path)
+            prev_best_model_path = best_model_path  # Update the previous best model path
+            log_print(f"Saved best model at epoch {epoch+1} with validation accuracy: {best_val_accuracy:.2f}%")
+        
+        # Save learning curve after each epoch (always overwrite the previous one)
+        plot_learning_curve(
+            epoch + 1, 
+            train_losses, 
+            train_accuracies, 
+            val_accuracies, 
+            save_path=f'{log_dir}/learning_curve.png'
+        )
+    
+    # Calculate total training time
+    total_time = time.time() - start_time
+    hours, remainder = divmod(total_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    log_print(f"\nTraining completed in {int(hours)}h {int(minutes)}m {int(seconds)}s")
+    log_print(f"Best validation accuracy: {best_val_accuracy:.2f}%")
     
     # Save final model
-    torch.save(student_model.state_dict(), f'{output_dir}/student_model_final.pth')
+    final_model_path = f'{log_dir}/student_model_final_epoch{args.num_epochs}_acc{best_val_accuracy:.2f}.pth'
+    torch.save(student_model.state_dict(), final_model_path)
+    log_print(f"Final model saved to {final_model_path}")
     
-    # Plot learning curves
-    plt.figure(figsize=(12, 5))
+    # Save final learning curve
+    plot_learning_curve(
+        args.num_epochs, 
+        train_losses, 
+        train_accuracies, 
+        val_accuracies, 
+        save_path=f'{log_dir}/learning_curve.png'
+    )
     
-    # Plot loss
-    plt.subplot(1, 2, 1)
-    plt.plot(range(1, num_epochs + 1), train_losses, 'b-', alpha=0.3, label='Training Loss (raw)')
-    plt.plot(range(1, num_epochs + 1), savgol_filter(train_losses, min(15, len(train_losses) - 2 - (len(train_losses) - 2) % 2), 2), 'b-', label='Training Loss (smoothed)')
-    plt.title(f'Task {task} - Training Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    
-    # Plot accuracy
-    plt.subplot(1, 2, 2)
-    plt.plot(range(1, num_epochs + 1), train_accuracies, 'b-', alpha=0.3, label='Training Accuracy (raw)')
-    plt.plot(range(1, num_epochs + 1), savgol_filter(train_accuracies, min(15, len(train_accuracies) - 2 - (len(train_accuracies) - 2) % 2), 2), 'b-', label='Training Accuracy (smoothed)')
-    plt.plot(range(1, num_epochs + 1), val_accuracies, 'r-', alpha=0.3, label='Validation Accuracy (raw)')
-    plt.plot(range(1, num_epochs + 1), savgol_filter(val_accuracies, min(15, len(val_accuracies) - 2 - (len(val_accuracies) - 2) % 2), 2), 'r-', label='Validation Accuracy (smoothed)')
-    plt.title(f'Task {task} - Accuracy')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig(f'{output_dir}/learning_curve_kd.png')
-    plt.close()
-    
-    print(f"Training completed for Task {task}!")
+    log_print(f"Training completed for Task {args.task}!")
+    log_print(f"All logs and visualizations saved to {log_dir}")
 
 
 if __name__ == "__main__":
