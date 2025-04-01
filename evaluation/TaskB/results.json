@@ -1,0 +1,19 @@
+{
+  "task": "B",
+  "model_path": "./best_models/TaskB/student_model_epoch12_acc80.00.pth",
+  "overall_accuracy": 80.0,
+  "per_class_accuracy": {
+    "cat": 92.0,
+    "dog": 70.0,
+    "horse": 92.0,
+    "elephant": 86.0,
+    "butterfly": 78.0,
+    "chicken": 64.0,
+    "sheep": 72.0,
+    "spider": 84.0,
+    "squirrel": 86.0,
+    "cow": 60.0,
+    "tiger": 82.0,
+    "zebra": 94.0
+  }
+}
