@@ -1,4 +1,27 @@
-# Knowledge Distillation Training Parameters Guide
+# Knowledge Distillation Project
+
+This project implements knowledge distillation from multiple teacher models to a single student model across different tasks.
+
+## Evaluation
+
+To run all evaluation scripts at once, use:
+
+```bash
+python evaluation.py
+```
+
+This will automatically execute both `evaluation_taska.py` and `evaluation_taskb.py` in sequence and provide a summary of the results.
+
+### Sample Predictions
+
+Below is a sample of model predictions from our evaluation:
+
+![Sample Predictions](evaluation/TaskA/sample_predictions.png)
+
+
+![Sample Predictions](evaluation/TaskB/sample_predictions.png)
+
+## Knowledge Distillation Training Parameters Guide
 
 This document explains the key parameters for knowledge distillation from multiple teacher models to a student model, focusing on when and how to adjust them for optimal results.
 
