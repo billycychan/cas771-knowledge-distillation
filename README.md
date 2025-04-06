@@ -18,10 +18,10 @@ Before running the evaluation, download the model and data files:
 
 ```bash
 # Download best models
-gdown --fuzzy https://drive.google.com/file/d/1H9VcBqfV3JmZFygA7erUPydAU5XAxSh-/view?usp=drive_link
+gdown --fuzzy https://drive.google.com/file/d/1H9VcBqfV3JmZFygA7erUPydAU5XAxSh-
 
 # Download data
-gdown --fuzzy https://drive.google.com/file/d/12KVxl9n577vwoZ1WPn6U70jD37_UA0y-/view?usp=drive_link
+gdown --fuzzy https://drive.google.com/file/d/12KVxl9n577vwoZ1WPn6U70jD37_UA0y-
 
 
 # Extract downloaded files
