@@ -6,7 +6,7 @@ This project implements knowledge distillation from multiple teacher models to a
 
 ``` bash
 # Clone the project
-git clone https://github.com/billycychan/cas771-knowledge-distillation.git
+git clone https://github.com/Djanghao/cas771-knowledge-distillation.git
 
 # Change the directory to the root
 cd cas771-knowledge-distillation
