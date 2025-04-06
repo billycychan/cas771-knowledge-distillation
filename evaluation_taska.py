@@ -429,9 +429,9 @@ def load_custom_test_data(batch_size=16):
     
     # Define paths to the original data files
     data_paths = [
-        './data/TaskA/val_dataA_model_1.pth',
-        './data/TaskA/val_dataA_model_2.pth',
-        './data/TaskA/val_dataA_model_3.pth'
+        'data/TaskA/Model1_trees_superclass/model1_test_supercls.pth',
+        'data/TaskA/Model2_flowers_superclass/model2_test_supercls.pth',
+        'data/TaskA/Model3_fruit+veg_superclass/model3_test_supercls.pth'
     ]
     
     print("Loading original image data from source files...")

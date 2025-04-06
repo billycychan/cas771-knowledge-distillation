@@ -2,6 +2,33 @@
 
 This project implements knowledge distillation from multiple teacher models to a single student model across different tasks.
 
+## Clone the Project
+
+``` bash
+# Clone the project
+git clone git@github.com:Djanghao/cas771-knowledge-distillation.git
+
+# Change the directory to the root
+cd cas771-knowledge-distillation
+```
+
+## Download Required Resources
+
+Before running the evaluation, download the model and data files:
+
+```bash
+# Download best models
+gdown --fuzzy https://drive.google.com/file/d/1H9VcBqfV3JmZFygA7erUPydAU5XAxSh-/view?usp=drive_link
+
+# Download data
+gdown --fuzzy https://drive.google.com/file/d/12KVxl9n577vwoZ1WPn6U70jD37_UA0y-/view?usp=drive_link
+
+
+# Extract downloaded files
+for file in *.zip; do unzip "$file"; done && find . -type d -name "__MACOSX" -exec rm -rf {} \; 2>/dev/null
+```
+
+
 ## Evaluation
 
 To run all evaluation scripts at once, use:
