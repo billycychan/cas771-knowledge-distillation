@@ -1,0 +1,22 @@
+{
+  "task": "A",
+  "model_path": "./best_models/TaskA/student_model_epoch57_acc81.27.pth",
+  "overall_accuracy": 81.26666666666667,
+  "per_class_accuracy": {
+    "apple": 91.0,
+    "maple_tree": 71.0,
+    "mushroom": 93.0,
+    "oak_tree": 68.0,
+    "orange": 91.0,
+    "orchid": 88.0,
+    "palm_tree": 91.0,
+    "pear": 85.0,
+    "pine_tree": 68.0,
+    "poppy": 79.0,
+    "rose": 75.0,
+    "sunflower": 96.0,
+    "sweet_pepper": 68.0,
+    "tulip": 74.0,
+    "willow": 81.0
+  }
+}
